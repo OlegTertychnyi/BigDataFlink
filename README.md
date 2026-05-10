@@ -1,37 +1,95 @@
 # BigDataFlink
 Анализ больших данных - лабораторная работа №3 - Streaming processing с помощью Flink
 
-Одним из самых популярных фреймворков для работы со streaming processing является Apache Flink. Apache Flink - мощный фреймворк, который предлагает широкий набор функциональности для простого написания streaming processing.
+## Требования
 
-Что необходимо сделать? 
+- **Docker** + **Docker Compose**
+- ~4 ГБ свободной RAM, ~3 ГБ места на диске
+- Bash (для `run.sh`)
+- Опционально: **DBeaver** для просмотра данных
 
-Необходимо реализовать потоковую обработку данных с помощью Flink, который читает топик Kafka, трансформирует данные в режиме streaming в модель звезда и пишет результат в PostgreSQL. Данные в Kafka-топиках хранятся в формате json. Данные в топик kafka нужно отправлять самостоятельно, эмулируя источник данных.
+## Запуск с нуля
 
-Какие данные отправляются в Kafka?
- - Каждое сообщение в Kafka-топике - это строчка из csv файлов, преобразованная в формат json.
+Одна команда — поднимает всю инфраструктуру, отправляет данные, применяет FK, печатает результат:
 
-Какие данные отправляются в PostgreSQL?
- - Трансформированные данные в модель данных звезда.
+```bash
+./run.sh
+```
+Сразу пометка - в начале чистятся volume-ы!
 
-![Лабораторная работа №3](https://github.com/user-attachments/assets/d3c1544d-3fe6-4c15-b673-9aa5d27dbd76)
+После завершения должны появиться счётчики:
 
+```
+  table_name   | rows
+---------------+-------
+ dim_customers | 10000
+ dim_products  |  1149
+ dim_sellers   | 10000
+ dim_stores    |  9998
+ dim_suppliers | 10000
+ fact_sales    | 10000
+```
 
-Алгоритм:
+`fact_sales = 10000` — все продажи доехали. Размеры dim'ов отражают уникальность бизнес-ключей в исходных CSV (mock-данные с почти уникальными email'ами).
 
-1. Клонируете к себе этот репозиторий.
-2. Устанавливаете инструмент для работы с запросами SQL (рекомендую DBeaver).
-3. Устанавливаете базу данных PostgreSQL (рекомендую установку через docker).
-4. Устанавливаете Apache Flink (рекомендую установку через Docker).
-5. Устанавливаете Apache Kafka (рекомендую установку через Docker).
-6. Скачиваете файлы с исходными данными mock_data( * ).csv, где ( * ) номера файлов. Всего 10 файлов, каждый по 1000 строк.
-7. Реализуете приложение, которое каждую строчку из исходных csv-файлов преобразует в json и отправляет в виде сообщения в Kafka-топик.
-8. Реализуете приложение на Flink, которое читает Kafka-топик, преобразует данные в модель звезда и сохраняет в PostgreSQL в режиме streaming.
-9. Проверяете конечные данные в PostgreSQL.
-10. Отправляете работу на проверку лаборантам.
+## Доступ к сервисам
 
-Что должно быть результатом работы?
+- **Flink Web UI:** http://localhost:8082 — там видна running-job, граф source→sinks, метрики и checkpoints.
+- **PostgreSQL** через DBeaver / psql:
+  - Host: `localhost`, Port: `5434`
+  - DB: `bigdata_lab3`, User: `flink_user`, Pass: `flink_pass`
+  - Схема: `star`
 
-1. Репозиторий, в котором есть исходные данные mock_data().csv, где () номера файлов. Всего 10 файлов, каждый по 1000 строк.
-2. Файл docker-compose.yml с установкой PostgreSQL, Flink, Kafka и запуском приложения, которое из файлов mock_data(*).csv создает сообщения json в Kafka.
-3. Инструкция, как запускать Flink-джобу и приложение для отправки данных в Kafka для проверки лабораторной работы.
-4. Код Apache Flink для трансформации данных в режиме streaming.
+## Проверка целостности
+
+```bash
+docker exec -it bdf_postgres psql -U flink_user -d bigdata_lab3 -c "
+SELECT
+  COUNT(*)                                            AS total_facts,
+  COUNT(*) FILTER (WHERE c.customer_email IS NULL)    AS orphan_customers,
+  COUNT(*) FILTER (WHERE s.seller_email   IS NULL)    AS orphan_sellers,
+  COUNT(*) FILTER (WHERE p.product_key    IS NULL)    AS orphan_products,
+  COUNT(*) FILTER (WHERE st.store_key     IS NULL)    AS orphan_stores,
+  COUNT(*) FILTER (WHERE sup.supplier_email IS NULL)  AS orphan_suppliers
+FROM star.fact_sales f
+LEFT JOIN star.dim_customers  c   ON f.customer_email = c.customer_email
+LEFT JOIN star.dim_sellers    s   ON f.seller_email   = s.seller_email
+LEFT JOIN star.dim_products   p   ON f.product_key    = p.product_key
+LEFT JOIN star.dim_stores     st  ON f.store_key      = st.store_key
+LEFT JOIN star.dim_suppliers  sup ON f.supplier_email = sup.supplier_email;
+"
+```
+
+Все `orphan_*` должны быть `0`.
+
+## Пример аналитического запроса
+
+```sql
+SELECT
+  p.product_brand,
+  p.product_category,
+  COUNT(*)                                  AS sales,
+  SUM(f.sale_total_price)::numeric(14,2)    AS revenue
+FROM star.fact_sales f
+JOIN star.dim_products p ON f.product_key = p.product_key
+GROUP BY p.product_brand, p.product_category
+ORDER BY revenue DESC
+LIMIT 10;
+```
+
+## Остановка
+
+```bash
+docker compose --profile producer down
+docker compose --profile producer down -v
+```
+
+## Технические заметки
+
+**Streaming-семантика:** Flink-джоба не завершается после прочтения 10000 сообщений — это streaming, она работает бесконечно. Если перезапустить producer (например `docker compose --profile producer up producer`), Flink ту же дельту дольёт: dim'ы перезапишутся через UPSERT (PK не позволят задублировать), `fact_sales` увеличится в 2 раза (append-only).
+
+**FK применяются после заливки.** В streaming dim-записи и fact-записи приходят параллельно — fact может прийти раньше dim, и FK выкинул бы ошибку. Поэтому FK добавляются скриптом `sql/02_foreign_keys.sql` уже после того, как поток заглох.
+
+**JDBC connector в Flink** работает в upsert-режиме при наличии `PRIMARY KEY ... NOT ENFORCED` в Flink-таблице — он генерирует `INSERT ... ON CONFLICT DO UPDATE`. Для `fact_sales` PK не задан → append-only INSERT.
+
+**Чекпоинты Flink** — раз в 10 секунд (см. `flink-job/job.sql`). Они нужны для exactly-once семантики JDBC sink'а: Kafka offset'ы коммитятся вместе с записью батча в Postgres.

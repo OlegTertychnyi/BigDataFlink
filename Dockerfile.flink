@@ -1,0 +1,6 @@
+FROM flink:1.18.1-scala_2.12-java11
+
+# Копируем JDBC-драйверы и Flink-коннекторы в lib/
+COPY jars/flink-sql-connector-kafka-3.1.0-1.18.jar    /opt/flink/lib/
+COPY jars/flink-connector-jdbc-3.1.2-1.18.jar          /opt/flink/lib/
+COPY jars/postgresql-42.7.3.jar                        /opt/flink/lib/
