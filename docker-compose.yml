@@ -1,5 +1,4 @@
 services:
-  # ============ Kafka ============
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
     container_name: bdf_zookeeper
@@ -42,7 +41,6 @@ services:
       timeout: 5s
       retries: 10
 
-  # ============ PostgreSQL ============
   postgres:
     image: postgres:16
     container_name: bdf_postgres
@@ -63,7 +61,6 @@ services:
       timeout: 5s
       retries: 10
 
-  # ============ Flink ============
   flink-jobmanager:
     build:
       context: .
@@ -106,7 +103,6 @@ services:
     depends_on:
       - flink-jobmanager
 
-  # ============ Producer (CSV → Kafka) ============
   producer:
     build:
       context: ./producer
@@ -124,9 +120,8 @@ services:
       - "./исходные данные:/data:ro"
     networks:
       - bdf_net
-    # restart: on-failure  # включи если хочешь автоповтор при ошибках
     profiles:
-      - producer  # запускается отдельно, см. README
+      - producer
 
 volumes:
   pg_data:
